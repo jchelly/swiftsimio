@@ -6,6 +6,7 @@ from .masks import SWIFTMask
 from .statistics import SWIFTStatisticsFile
 from .__version__ import __version__
 from .__cite__ import __cite__
+from .opener import FileOpener
 
 import swiftsimio.metadata as metadata
 import swiftsimio.accelerated as accelerated
@@ -50,7 +51,10 @@ def validate_file(filename: str):
 
 
 def mask(
-    filename: str, spatial_only: bool = True, safe_padding: _Union[bool, float] = True
+    filename: str,
+    spatial_only: bool = True,
+    safe_padding: _Union[bool, float] = True,
+    server: _Optional[str] = None,
 ) -> SWIFTMask:
     """
     Sets up a masking object for you to use with the correct units and
@@ -92,7 +96,7 @@ def mask(
     spatial_only=False version).
     """
 
-    units = SWIFTUnits(filename)
+    units = SWIFTUnits(filename, FileOpener(server))
     metadata = metadata_discriminator(filename, units)
 
     return SWIFTMask(
@@ -100,7 +104,9 @@ def mask(
     )
 
 
-def load(filename: str, mask: _Optional[SWIFTMask] = None) -> SWIFTDataset:
+def load(
+    filename: str, mask: _Optional[SWIFTMask] = None, server: _Optional[str] = None
+) -> SWIFTDataset:
     """
     Loads the SWIFT dataset at filename.
 
@@ -110,9 +116,11 @@ def load(filename: str, mask: _Optional[SWIFTMask] = None) -> SWIFTDataset:
         SWIFT snapshot file to read
     mask : SWIFTMask, optional
         mask to apply when reading dataset
+    server : str, optional
+        if not None, read files from hdfstream server
     """
 
-    return SWIFTDataset(filename, mask=mask)
+    return SWIFTDataset(filename, FileOpener(server), mask=mask)
 
 
 def load_statistics(filename: str) -> SWIFTStatisticsFile:
