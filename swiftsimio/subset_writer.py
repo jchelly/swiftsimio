@@ -5,6 +5,7 @@ it to a new file.
 
 from swiftsimio.masks import SWIFTMask
 from swiftsimio.accelerated import read_ranges_from_file
+from swiftsimio.file_utils import is_dataset, is_soft_link
 import swiftsimio.metadata as metadata
 
 import h5py
@@ -62,7 +63,9 @@ def get_dataset_mask(
     """
     suffix = "" if suffix is None else suffix
 
-    if "PartType" in dataset_name:
+    if mask.metadata.shared_cell_counts:
+        return getattr(mask, f"_shared{suffix}", None)
+    elif "PartType" in dataset_name:
         part_type = dataset_name.lstrip("/").split("/")[0]
         mask_name = metadata.particle_types.particle_name_underscores[part_type]
         return getattr(mask, f"{mask_name}{suffix}", None)
@@ -103,7 +106,7 @@ def find_datasets(
 
     for key in keys:
         subpath = f"{path}/{key}"
-        if isinstance(input_file[subpath], h5py.Dataset):
+        if is_dataset(input_file[subpath]):
             dataset_names.append(subpath)
         elif input_file[subpath].keys() is not None:
             find_datasets(input_file, dataset_names, subpath, recurse=True)
@@ -147,7 +150,7 @@ def find_links(
     for key in keys:
         subpath = f"{path}/{key}"
         dataset = input_file.get(subpath, getlink=True)
-        if isinstance(dataset, h5py.SoftLink):
+        if is_soft_link(dataset):
             link_names.append(subpath.lstrip("/"))
             link_paths.append(dataset.path)
         else:
@@ -188,14 +191,18 @@ def update_metadata_counts(infile: h5py.File, outfile: h5py.File, mask: SWIFTMas
     counts_dsets = find_datasets(infile, path="/Cells/Counts")
     for part_type in particle_counts:
         for dset in counts_dsets:
-            if get_swift_name(part_type) in dset:
+            if mask.metadata.shared_cell_counts:
+                outfile[dset] = particle_counts[part_type]
+            elif get_swift_name(part_type) in dset:
                 outfile[dset] = particle_counts[part_type]
 
     # Loop over each particle type in the cells and update their offsets
     offsets_dsets = find_datasets(infile, path=offsets_path)
     for part_type in particle_offsets:
         for dset in offsets_dsets:
-            if get_swift_name(part_type) in dset:
+            if mask.metadata.shared_cell_counts:
+                outfile[dset] = particle_offsets[part_type]
+            elif get_swift_name(part_type) in dset:
                 outfile[dset] = particle_offsets[part_type]
 
     # Copy the cell centres and metadata
@@ -235,10 +242,18 @@ def write_metadata(
     update_metadata_counts(infile, outfile, mask)
 
     skip_list = links_list.copy()
-    skip_list += ["PartType", "Cells"]
+    skip_list += ["Cells"]
+    skip_list += set(group.split("/")[0] for group in mask.metadata.present_groups)
     for field in infile.keys():
         if not any([substr for substr in skip_list if substr in field]):
-            infile.copy(field, outfile)
+            # HDF5<14 can segfault for these groups when infile.copy() is called
+            # due to the arrays of strings stored in the attributes
+            if field in ["Header", "Parameters"]:
+                header = outfile.create_group(field)
+                for k, v in infile[field].attrs.items():
+                    header.attrs[k] = v
+            else:
+                infile.copy(field, outfile)
 
 
 def write_datasubset(
@@ -326,15 +341,15 @@ def write_subset(output_file: str, mask: SWIFTMask):
         the mask used to define subset that is written to new snapshot
     """
     # Open the files
-    infile = h5py.File(mask.metadata.filename, "r")
-    outfile = h5py.File(output_file, "w")
+    infile = mask.metadata.units.file_opener.open(mask.metadata.filename, "r")
 
-    # Write metadata and data subset
-    list_of_links, list_of_link_paths = find_links(infile)
-    write_metadata(infile, outfile, list_of_links, mask)
-    write_datasubset(infile, outfile, mask, find_datasets(infile), list_of_links)
-    connect_links(outfile, list_of_links, list_of_link_paths)
+    with h5py.File(output_file, "w") as outfile:
+
+        # Write metadata and data subset
+        list_of_links, list_of_link_paths = find_links(infile)
+        write_metadata(infile, outfile, list_of_links, mask)
+        write_datasubset(infile, outfile, mask, find_datasets(infile), list_of_links)
+        connect_links(outfile, list_of_links, list_of_link_paths)
 
     # Clean up
     infile.close()
-    outfile.close()
