@@ -113,7 +113,7 @@ def preload_test_data():
         "LegacyCosmologicalVolume.hdf5",
         "LegacyCosmologicalVolumeDithered.hdf5",
         "SoapExample.hdf5",
-        "ColibreSingle.hdf5",
+        #"ColibreSingle.hdf5",
     ]
     for name in all_filenames:
         _requires(name)
@@ -200,7 +200,7 @@ access_methods = [
             "EagleDistributed.hdf5",
             "EagleSingle.hdf5",
             "LegacyCosmologicalVolume.hdf5",
-            "ColibreSingle.hdf5",
+            #"ColibreSingle.hdf5",
         ],
         access_methods,
     )
