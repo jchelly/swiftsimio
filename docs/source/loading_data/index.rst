@@ -66,7 +66,7 @@ our simulation:
 
    print(boxsize)
 
-This will output ``[142.24751067 142.24751067 142.24751067] Mpc`` - note
+This will output ``[142.24751067 142.24751067 142.24751067] Mpc (Comoving)`` - note
 the units that are attached. These units being attached to everything is one
 of the key advantages of using :mod:`swiftsimio`. It is really easy to convert
 between units; for instance if we want that box-size in kiloparsecs,
@@ -97,8 +97,8 @@ can find more information about :mod:`unyt` on the `unyt documentation website`_
 .. _`unyt documentation website`: https://unyt.readthedocs.io/en/stable/
 
 There is lots of metadata available through this object; the best way to see
-this is by exploring the object using ``dir()`` in an interactive shell, but
-as a summary:
+this is by exploring the object using ``dir()`` or tab completion in an
+interactive shell, but as a summary:
 
 + All metadata from the snapshot is available through many variables, for example
   the ``meta.hydro_scheme`` property.
@@ -124,7 +124,7 @@ the available particle types. For example:
 .. code-block:: python
 
    data
-   
+
 prints the available particle types (or, more generally, groups):
 
 .. code-block:: python
@@ -144,10 +144,10 @@ gives:
 
    SWIFT dataset at cosmo_volume_example.hdf5.
    Available fields: coordinates, masses, particle_ids, velocities
-   
+
 With compatible python interpreters, the available fields (and other attributes
 such as functions) can be seen using the tab completion feature, for example
-typing `>>> data.dark_matter.` at the command prompt and pressing tab twice
+typing ``>>> data.dark_matter.`` at the command prompt and pressing tab twice
 gives:
 
 .. code-block:: python
@@ -157,7 +157,7 @@ gives:
    data.dark_matter.particle_ids                 data.dark_matter.generate_empty_properties()
    data.dark_matter.group                        data.dark_matter.units
    data.dark_matter.group_metadata               data.dark_matter.velocities
-   data.dark_matter.group_name                   
+   data.dark_matter.group_name
 
 The available fields can also be accessed programatically using the instance of
 :obj:`swiftsimio.reader.SWIFTMetadata`, ``data.metadata``,
@@ -211,7 +211,7 @@ masses per cubic megaparsec,
 
 .. code-block:: python
 
-   new_density_units = unyt.Solar_Mass / unyt.Mpc**3
+   new_density_units = unyt.solMass / unyt.Mpc**3
 
    rho_gas.convert_to_units(new_density_units)
 
@@ -275,11 +275,6 @@ in SWIFT will be automatically read.
 Reading from an open file
 -------------------------
 
-:mod:`swiftsimio` normally opens and closes the HDF5 snapshot file for
-each operation. This is convenient for interactive use and avoids
-leaving files open for long periods of time, but sometimes it might be
-desirable to minimize the number of file open and close operations.
-
 It is possible to pass an open :obj:`h5py.File` object to
 :mod:`swiftsimio.load` and :mod:`swiftsimio.mask` in place of the
 filename. In this case swiftsimio will do all file access through the
@@ -321,7 +316,10 @@ snapshots with:
    import hdfstream
    from swiftsimio import load
 
-   snap_file = hdfstream.open("cosma", "Tests/SWIFT/IOExamples/ssio_ci_04_2025/EagleSingle.hdf5")
+   snap_file = hdfstream.open(
+       "cosma",
+       "Tests/SWIFT/IOExamples/ssio_ci_04_2025/EagleSingle.hdf5"
+   )
    data = load(snap_file)
 
 Here, ``data`` will be a :obj:`swiftsimio.reader.SWIFTDataset`. It
@@ -350,12 +348,15 @@ place of the filename.
    import hdfstream
    import swiftsimio as sw
 
-   snap_file = hdfstream.open("cosma", "Tests/SWIFT/IOExamples/ssio_ci_04_2025/EagleSingle.hdf5")
+   snap_file = hdfstream.open(
+       "cosma",
+       "Tests/SWIFT/IOExamples/ssio_ci_04_2025/EagleSingle.hdf5"
+   )
 
    mask = sw.mask(snap_file)
    # The full metadata object is available from within the mask
    boxsize = mask.metadata.boxsize
-   # load_region is a 3x2 list [[left, right], [bottom, top], [front, back]]
+   # load_region is a 3x2 list [[xmin, xmax], [ymin, ymax], [zmin, zmax]]
    load_region = [[0.0 * b, 0.5 * b] for b in boxsize]
 
    # Constrain the mask
@@ -363,3 +364,47 @@ place of the filename.
 
    # Now load the snapshot with this mask
    data = sw.load(snap_file, mask=mask)
+
+Line of sight files
+-------------------
+
+SWIFT can output dedicated line-of-sight (LOS) files containing all the gas particles
+that overlap with specific lines of sight through the simulation volume.
+Each line of sight is contained within its own group (e.g., ``los_0000``, ``los_0001``)
+and carries the exact same gas datasets present in a standard snapshot.
+
+To read a line-of-sight file, pass the filename directly to :mod:`swiftsimio.load`.
+You can then access individual lines of sight and their particle
+fields just like standard particle types:
+
+.. code-block:: python
+
+   import swiftsimio as sw
+
+   # Load the line-of-sight dataset
+   data = sw.load(los_filename)
+
+   # Standard metadata is available
+   data.metadata.redshift
+
+   # Extract gas particle fields of the first los group
+   data.los_0000.masses
+
+Each line of sight group contains metadata detailing its orientation and
+location within the simulation volume. These attributes can be
+accessed directly as properties of the group:
+
+* ``xaxis``, ``yaxis``, and ``zaxis``: Indicate which coordinate axis
+  the line of sight runs parallel to.
+* ``xpos`` and ``ypos``: The the remaining two coordinates
+  that define the line's exact position in the simulation box.
+
+For example, you can inspect these attributes as follows:
+
+.. code-block:: python
+
+   # Check which axis the line of sight is parallel to
+   data.los_0000.xaxis
+
+   # Access the coordinates defining the line's location
+   data.los_0000.xpos

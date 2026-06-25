@@ -18,9 +18,11 @@ There is also an alternative :code:`"nearest_neighbours"` backend, which uses
 nearest-neighbour interpolation to compute the densities at each pixel.
 This backend is more suited for use with moving-mesh hydrodynamics schemes.
 
-The primary function here is
-:func:`swiftsimio.visualisation.slice.slice_gas`, which allows you to
-create a gas slice of any field. See the example below.
+The primary functions here are
+:func:`swiftsimio.visualisation.slice.slice_pixel_grid`, which allows you to
+create a slice of any field for any particle type, and the convenience wrapper
+:func:`swiftsimio.visualisation.slice.slice_gas` for gas particles. See the
+examples below.
 
 Example
 -------
@@ -137,17 +139,18 @@ and should therefore not be used together with a rotation.
 Rotations
 ---------
 
-Rotations of the box prior to slicing are provided in a similar fashion to the 
-:mod:`swiftsimio.visualisation.projection` sub-module, by using the 
+Rotations of the box prior to slicing are provided in a similar fashion to the
+:mod:`swiftsimio.visualisation.projection` sub-module, by using the
 :mod:`swiftsimio.visualisation.rotation` sub-module. To rotate the perspective
 prior to slicing a ``rotation_center`` argument in
 :func:`~swiftsimio.visualisation.slice.slice_gas` needs
-to be provided, specifying the point around which the rotation takes place. 
+to be provided, specifying the point around which the rotation takes place.
 The angle of rotation is specified with a matrix, supplied by ``rotation_matrix``
-in :func:`~swiftsimio.visualisation.slice.slice_gas`. The rotation matrix may be computed with 
-:func:`~swiftsimio.visualisation.rotation.rotation_matrix_from_vector`. This will result in the perspective being 
-rotated to be along the provided vector. This approach to rotations applied to 
-the above example is shown below.
+in :func:`~swiftsimio.visualisation.slice.slice_gas`. The rotation matrix may
+be computed with
+:func:`~swiftsimio.visualisation.rotation.rotation_matrix_from_vector`. This will
+result in the perspective being rotated to be along the provided vector. This
+approach to rotations applied to the above example is shown below.
 
 .. code-block:: python
 
@@ -162,9 +165,9 @@ the above example is shown below.
 
    # Specify the rotation parameters
    center = 0.5 * data.metadata.boxsize
-   rotate_vec = [0.5,0.5,1]
+   rotate_vec = [0.5, 0.5, 1]
    matrix = rotation_matrix_from_vector(rotate_vec, axis='z')
-   
+
    # Map in msun / mpc^3
    # If a rotation center is provided, z_slice is taken relative to this
    # center, resulting in a slice perpendicular to the rotated z axis
@@ -178,10 +181,10 @@ the above example is shown below.
        parallel=True,
        periodic=False,  # disable periodic boundaries when using rotations
    )
-   
+
    # Map in msun * K / mpc^3
    mass_weighted_temp_map = slice_gas(
-       data, 
+       data,
        z_slice=0. * data.metadata.boxsize[2],
        resolution=1024,
        project="mass_weighted_temps",
@@ -201,6 +204,111 @@ the above example is shown below.
 
    # Normalize and save
    imsave("temp_map.png", LogNorm()(temp_map.value), cmap="twilight")
+
+
+Masking
+-------
+
+Sometimes you want to render only a subset of a snapshot's data, for example
+just particles belonging to a given friends-of-friends group.
+To achieve this, you can provide a boolean mask to
+:func:`~swiftsimio.visualisation.slice.slice_pixel_grid` or
+:func:`~swiftsimio.visualisation.slice.slice_gas` to render only the
+particles which the mask specifies.
+
+.. code-block:: python
+
+   from swiftsimio import load, mask, cosmo_array
+   from swiftsimio.visualisation.slice import slice_gas
+
+   snapshot_filename = "cosmo_volume_example.hdf5"
+   catalog_filename = "fof_output_example.hdf5"
+
+   # Which halo are we looking at?
+   halo = 0
+
+   fof_catalog = load(catalog_filename)
+
+   fof_id = fof_catalog.fof_groups.group_ids[halo]
+   fof_radius = fof_catalog.fof_groups.radii[halo]
+   fof_centre = fof_catalog.fof_groups.centres[halo]
+
+   # Add some buffer space around the edges
+   fof_radius *= 1.1
+
+   # Define a region around the fof group
+   region = cosmo_array(
+       [
+           [fof_centre[0] - fof_radius, fof_centre[0] + fof_radius],
+           [fof_centre[1] - fof_radius, fof_centre[1] + fof_radius],
+           [fof_centre[2] - fof_radius, fof_centre[2] + fof_radius],
+       ],
+       fof_centre.units,
+       comoving=True,
+       scale_factor=fof_catalog.metadata.a,
+       scale_exponent=1,
+   )
+
+   # Only load data in our region of interest
+   data_mask = mask(snapshot_filename)
+   data_mask.constrain_spatial(region)
+
+   data = load(snapshot_filename, mask=data_mask)
+
+   halo_slice = slice_gas(
+       data,
+       z_slice=fof_centre[2],
+       resolution=512,
+       parallel=True,
+       region=region.ravel(),
+       periodic=True,
+       mask=data.gas.fofgroup_id == fof_id, # Only render particles in the group
+   )
+
+
+Other particle types
+--------------------
+
+Other particle types can be sliced using
+:func:`swiftsimio.visualisation.slice.slice_pixel_grid`.
+
+For particle types that do not have smoothing lengths (e.g. dark matter),
+you will need to generate them first using
+:func:`~swiftsimio.visualisation.smoothing_length.generate.generate_smoothing_lengths`.
+
+.. code-block:: python
+
+   from swiftsimio import load
+   from swiftsimio.visualisation.slice import slice_pixel_grid
+   from swiftsimio.visualisation.smoothing_length import generate_smoothing_lengths
+
+   data = load("cosmo_volume_example.hdf5")
+
+   # Generate smoothing lengths for the dark matter
+   data.dark_matter.smoothing_length = generate_smoothing_lengths(
+       data.dark_matter.coordinates,
+       data.metadata.boxsize,
+       kernel_gamma=1.8,
+       neighbours=57,
+       speedup_fac=2,
+       dimension=3,
+   )
+
+   # Slice the dark matter mass at the midplane
+   dm_mass_slice = slice_pixel_grid(
+       # Pass the dark matter dataset, not the whole data object
+       data=data.dark_matter,
+       z_slice=0.5 * data.metadata.boxsize[2],
+       resolution=1024,
+       project="masses",
+       parallel=True,
+       periodic=True,
+   )
+
+   from matplotlib.pyplot import imsave
+   from matplotlib.colors import LogNorm
+
+   imsave("dm_mass_slice.png", LogNorm()(dm_mass_slice.value), cmap="inferno")
 
 
 Lower-level API
@@ -254,7 +362,7 @@ to re-scale this back to your original dimensions to get it in the correct units
 and do not forget that it now represents the smoothed quantity per volume.
 
 If the optional arguments ``box_x``, ``box_y`` and ``box_z`` are provided, they
-should contain the simulation box size in the same re-scaled coordinates as 
+should contain the simulation box size in the same re-scaled coordinates as
 ``x``, ``y`` and ``z``. The slicing function will then correctly apply
 periodic boundary wrapping. If ``box_x``, ``box_y`` and ``box_z`` are not
 provided or set to 0, no periodic boundaries are applied.

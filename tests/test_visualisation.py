@@ -3,8 +3,8 @@
 import pytest
 from swiftsimio import load, mask
 from swiftsimio.visualisation.projection import project_gas, project_pixel_grid
-from swiftsimio.visualisation.slice import slice_gas
-from swiftsimio.visualisation.volume_render import render_gas
+from swiftsimio.visualisation.slice import slice_gas, slice_pixel_grid
+from swiftsimio.visualisation.volume_render import render_gas, render_voxel_grid
 
 from swiftsimio.visualisation.slice_backends import (
     backends as slice_backends,
@@ -1167,13 +1167,26 @@ def test_nongas_smoothing_lengths(cosmological_volume_only_single_local):
     Just makes sure that we get back a unyt_array for unyt_array input, and
     a cosmo_array for cosmo_array input.
     """
-    # If project_gas runs without error the smoothing lengths seem usable.
     data = load(cosmological_volume_only_single_local)
     data.dark_matter.smoothing_length = generate_smoothing_lengths(
         data.dark_matter.coordinates, data.metadata.boxsize, kernel_gamma=1.8
     )
-    project_pixel_grid(data.dark_matter, resolution=256, project="masses")
     assert isinstance(data.dark_matter.smoothing_length, cosmo_array)
+
+    project_pixel_grid(data.dark_matter, resolution=256, project="masses")
+    assert isinstance(
+        slice_pixel_grid(
+            data.dark_matter,
+            z_slice=0.5 * data.metadata.boxsize[2],
+            resolution=256,
+            project="masses",
+        ),
+        cosmo_array,
+    )
+    assert isinstance(
+        render_voxel_grid(data.dark_matter, resolution=64, project="masses"),
+        cosmo_array,
+    )
 
     # We should also be able to use a unyt_array (rather than cosmo_array) as input,
     # and in this case get unyt_array as output.
@@ -1192,6 +1205,38 @@ def test_nongas_smoothing_lengths(cosmological_volume_only_single_local):
 
 class TestPowerSpectrum:
     """Tests for the visualisation module's power spectrum tools."""
+
+    def test_deposition_to_power_spectrum_defaults_to_zero_shot_noise(self):
+        """Missing shot-noise normalization should not subtract the box volume."""
+        deposition = cosmo_array(
+            np.ones((4, 4, 4)),
+            units="Msun / Mpc**3",
+            comoving=True,
+            scale_factor=1.0,
+            scale_exponent=-3,
+        )
+        boxsize = cosmo_array(
+            [10.0, 10.0, 10.0],
+            units="Mpc",
+            comoving=True,
+            scale_factor=1.0,
+            scale_exponent=1,
+        )
+
+        _, default_power_spectrum, _ = deposition_to_power_spectrum(deposition, boxsize)
+        _, infinite_norm_power_spectrum, _ = deposition_to_power_spectrum(
+            deposition, boxsize, shot_noise_norm=np.inf
+        )
+
+        np.testing.assert_allclose(
+            default_power_spectrum.value, infinite_norm_power_spectrum.value
+        )
+        assert default_power_spectrum.units == infinite_norm_power_spectrum.units
+        assert default_power_spectrum.comoving == infinite_norm_power_spectrum.comoving
+        assert (
+            default_power_spectrum.cosmo_factor
+            == infinite_norm_power_spectrum.cosmo_factor
+        )
 
     def test_dark_matter_power_spectrum(
         self, cosmological_volume_only_single_local, save=False
@@ -1536,3 +1581,150 @@ class TestProjectionBackends:
         assert np.allclose(
             repeating_img, np.block([[ref_img, ref_img], [ref_img, ref_img]])
         )
+
+
+def test_input_region_unmutated(cosmological_volume_only_single_local):
+    """
+    Check that the image region input by the user is not mutated.
+
+    Regression test for https://github.com/SWIFTSIM/swiftsimio/issues/314
+    """
+    data = load(cosmological_volume_only_single_local)
+    assert data.metadata.scale_factor < 1  # success trivial otherwise
+    size = (data.metadata.boxsize[0] * 0.25).to_physical_value(unyt.Mpc)  # as a float
+    float_region = [0, size, 0, size]
+    # now make a cosmo_array in physical Mpc:
+    im_region = cosmo_array(
+        float_region,
+        unyt.Mpc,
+        comoving=False,
+        scale_factor=data.metadata.scale_factor,
+        scale_exponent=1,
+    )
+    assert np.allclose(im_region.to_physical_value(unyt.Mpc), float_region)
+    project_gas(data, 16, region=im_region, periodic=False)
+    assert np.allclose(im_region.to_physical_value(unyt.Mpc), float_region)
+
+
+class TestVisualisationMask:
+    """Tests for the particle masking functionality in projections and slices."""
+
+    def test_projection(self, cosmological_volume_only_single_local):
+        """
+        Tests masking for projections.
+
+        Passing the mask parameter should be equivalent to filtering out the un-masked data and calling without a mask.
+        """
+        sd = load(cosmological_volume_only_single_local)
+        n_gas = sd.metadata.n_gas
+
+        mask = np.zeros(n_gas, dtype=np.bool)
+        mask[::2] = True
+
+        parallel = True
+        box_res = 256
+
+        with np.errstate(
+            invalid="ignore"
+        ):  # invalid value encountered in divide happens sometimes
+            masked_img = project_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+                mask=mask,
+            )
+
+            # Now we just get rid of all the un-masked data outright.
+            for f in ("coordinates", "smoothing_lengths", "masses"):
+                masked_arr = getattr(sd.gas, f)[::2]
+                setattr(sd.gas, f, masked_arr)
+
+            ref_img = project_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+            )
+            assert np.allclose(masked_img, ref_img)
+            assert np.any(masked_img > 0.0)
+
+    def test_slice(self, cosmological_volume_only_single_local):
+        """
+        Tests masking for slices.
+
+        Passing the mask parameter should be equivalent to filtering out the un-masked data and calling without a mask.
+        """
+        sd = load(cosmological_volume_only_single_local)
+        n_gas = sd.metadata.n_gas
+
+        mask = np.zeros(n_gas, dtype=np.bool)
+        mask[::2] = True
+
+        parallel = True
+        box_res = 256
+
+        with np.errstate(
+            invalid="ignore"
+        ):  # invalid value encountered in divide happens sometimes
+            masked_img = slice_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+                mask=mask,
+            )
+
+            # Now we just get rid of all the un-masked data outright.
+            for f in ("coordinates", "smoothing_lengths", "masses"):
+                masked_arr = getattr(sd.gas, f)[::2]
+                setattr(sd.gas, f, masked_arr)
+
+            ref_img = slice_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+            )
+            assert np.allclose(masked_img, ref_img)
+            assert np.any(masked_img > 0.0)
+
+    def test_render(self, cosmological_volume_only_single_local):
+        """
+        Tests masking for slices.
+
+        Passing the mask parameter should be equivalent to filtering out the un-masked data and calling without a mask.
+        """
+        sd = load(cosmological_volume_only_single_local)
+        n_gas = sd.metadata.n_gas
+
+        mask = np.zeros(n_gas, dtype=np.bool)
+        mask[::2] = True
+
+        parallel = True
+        box_res = 256
+
+        with np.errstate(
+            invalid="ignore"
+        ):  # invalid value encountered in divide happens sometimes
+            masked_img = render_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+                mask=mask,
+            )
+
+            # Now we just get rid of all the un-masked data outright.
+            for f in ("coordinates", "smoothing_lengths", "masses"):
+                masked_arr = getattr(sd.gas, f)[::2]
+                setattr(sd.gas, f, masked_arr)
+
+            ref_img = render_gas(
+                sd,
+                resolution=box_res,
+                parallel=parallel,
+                periodic=True,
+            )
+            assert np.allclose(masked_img, ref_img)
+            assert np.any(masked_img > 0.0)
